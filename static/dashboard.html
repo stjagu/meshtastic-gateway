@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Mesh Gateway Dashboard</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<style>
+/* --------------------------------------------------
+   GLOBAL
+-------------------------------------------------- */
+body {
+    margin: 0;
+    background: #1a1a1a;
+    color: #eee;
+    font-family: Arial, sans-serif;
+}
+
+/* --------------------------------------------------
+   MAIN GRID (A-LAYOUT)
+   Map left big • panels right stacked
+-------------------------------------------------- */
+.grid {
+    display: grid;
+    grid-template-columns: 1fr 350px;
+    grid-template-rows: 1fr;
+    height: 100vh;
+    gap: 12px;
+    padding: 10px;
+    box-sizing: border-box;
+}
+
+/* MAP */
+#mapCard {
+    background: #222;
+    border-radius: 8px;
+    padding: 10px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+/* RIGHT PANELS (A-LAYOUT) */
+#rightPanels {
+    display: grid;
+    grid-template-rows: 25vh 55vh 45vh; /* A-Layout restored */
+    gap: 12px;
+}
+
+.panel {
+    background: #111;
+    border-radius: 8px;
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+}
+
+.scroll-area {
+    flex: 1;
+    overflow-y: auto;
+}
+
+/* --------------------------------------------------
+   MESSAGE COLORS (A-VERSION)
+-------------------------------------------------- */
+.msg-text  { color: #6aff6a; }   /* green */
+.msg-gps   { color: #4af0ff; }   /* cyan */
+.msg-tele  { color: #ffb347; }   /* orange */
+.msg-alert { color: #ff6a6a; }   /* red */
+.msg-other { color: #bbb; }      /* grey */
+
+/* --------------------------------------------------
+   DRAWERS
+-------------------------------------------------- */
+.drawer {
+    position: fixed;
+    right: -380px;
+    top: 0;
+    width: 380px;
+    height: 100vh;
+    background: #111;
+    border-left: 2px solid #333;
+    color: #eee;
+    transition: right .3s ease;
+    z-index: 9999;
+    display: flex;
+    flex-direction: column;
+}
+.drawer.open { right: 0; }
+
+.drawer-header {
+    padding: 12px;
+    background: #1b1b1b;
+    border-bottom: 2px solid #333;
+    font-weight: bold;
+    display: flex;
+    justify-content: space-between;
+}
+
+.drawer-content {
+    padding: 12px;
+    overflow-y: auto;
+    flex: 1;
+}
+
+/* --------------------------------------------------
+   SEND BAR
+-------------------------------------------------- */
+#sendBox {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 52px;
+    background: #0f0f0f;
+    border-top: 1px solid #333;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    padding: 6px 12px;
+    z-index: 99999;
+}
+
+#sendInput,
+#sendTarget,
+#sendBtn {
+    height: 38px;
+}
+
+#sendInput {
+    flex: 1;
+    background: #1a1a1a;
+    color: white;
+    border-radius: 5px;
+    border: 1px solid #444;
+    padding: 0 10px;
+}
+
+#sendBtn {
+    background: #0078ff;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    padding: 0 16px;
+}
+
+</style>
+</head>
+<body>
+
+<div class="grid">
+
+    <!-- MAP -->
+    <div id="mapCard">
+        <h2>📍 Live Map</h2>
+        <iframe id="mapframe" src="/map"
+            style="width:100%; height:100%; border:none; border-radius:6px;">
+        </iframe>
+    </div>
+
+    <!-- RIGHT PANELS -->
+    <div id="rightPanels">
+
+        <div id="channelsPanel" class="panel">
+            <h2>Channels</h2>
+            <div id="channelList" class="scroll-area"></div>
+        </div>
+
+        <div id="messagesPanel" class="panel">
+            <h2>Messages</h2>
+            <div id="messages" class="scroll-area"></div>
+        </div>
+
+        <div id="nodesPanel" class="panel">
+            <h2>Nodes</h2>
+            <div id="nodeList" class="scroll-area"></div>
+        </div>
+
+    </div>
+</div>
+
+<!-- DRAWERS -->
+<div id="drawer" class="drawer">
+    <div class="drawer-header">
+        <span id="drawerTitle">Node Details</span>
+        <button onclick="closeDrawer()">✖</button>
+    </div>
+    <div id="drawerContent" class="drawer-content"></div>
+</div>
+
+<div id="channelDrawer" class="drawer">
+    <div class="drawer-header">
+        <span id="channelDrawerTitle">Channel Details</span>
+        <button onclick="closeChannelDrawer()">✖</button>
+    </div>
+    <div id="channelDrawerContent" class="drawer-content"></div>
+</div>
+
+<!-- SEND BAR -->
+<div id="sendBox">
+    <select id="sendTarget"><option value="">Broadcast</option></select>
+    <input id="sendInput" placeholder="Send message…">
+    <button id="sendBtn" onclick="sendMessage()">Send</button>
+</div>
+
+<script>
+// --------------------------------------------------
+// GLOBALS
+// --------------------------------------------------
+let globalNodes = {};
+let selectedChannel = null;
+
+// --------------------------------------------------
+// MESSAGE CLASSIFIER (restored A-version colors)
+// --------------------------------------------------
+function classifyMessage(msg) {
+    const t = msg.toLowerCase();
+    if (t.includes("[gps]")) return "msg-gps";
+    if (t.includes("[telemetry]") || t.includes("[env]")) return "msg-tele";
+    if (t.includes("alert") || t.includes("fail") || t.includes("error")) return "msg-alert";
+    return "msg-text";
+}
+
+// --------------------------------------------------
+// LOAD MESSAGES (restored format + colors)
+// --------------------------------------------------
+async function loadMessages() {
+    try {
+        const r = await fetch("/api/messages");
+        const msgs = await r.json();
+
+        const box = document.getElementById("messages");
+        box.innerHTML = "";
+
+        msgs.slice(0, 80).forEach(m => {
+            const div = document.createElement("div");
+            div.className = "msg-line " + classifyMessage(m.message);
+            div.innerHTML = `[${m.timestamp}] <b>${m.from}</b>: ${m.message}`;
+            box.appendChild(div);
+        });
+
+    } catch (err) {
+        console.error("loadMessages:", err);
+    }
+}
+
+// --------------------------------------------------
+// LOAD NODES
+// --------------------------------------------------
+async function loadNodes() {
+    try {
+        const r = await fetch("/api/nodes");
+        globalNodes = await r.json();
+
+        const box = document.getElementById("nodeList");
+        box.innerHTML = "";
+
+        for (const key in globalNodes) {
+            const n = globalNodes[key];
+            const user = n.user || {};
+            const name =
+                user.longName ||
+                user.shortName ||
+                user.id ||
+                n.num ||
+                "Node";
+
+            const row = document.createElement("div");
+            row.className = "node-row";
+            row.style.padding = "6px";
+            row.style.borderBottom = "1px solid #333";
+            row.style.cursor = "pointer";
+
+            row.innerHTML = `
+                <div class="node-name">${name}</div>
+                <div class="node-meta" style="opacity:.7; font-size:12px;">
+                    SNR ${n.snr ?? "?"} | RSSI ${n.rssi ?? "?"} | Hops ${n.hops ?? "?"}
+                </div>
+            `;
+
+            row.onclick = () => {
+                showNodeDrawer(n);
+                focusNodeOnMap(n);
+
+                const sel = document.getElementById("sendTarget");
+                sel.value = n.num ?? user.id ?? "";
+            };
+
+            box.appendChild(row);
+        }
+
+        // send dropdown update
+        const sel = document.getElementById("sendTarget");
+        const old = sel.value;
+
+        sel.innerHTML = `<option value="">Broadcast</option>`;
+        for (const key in globalNodes) {
+            const n = globalNodes[key];
+            if (n.num) sel.innerHTML += `<option value="${n.num}">${n.num}</option>`;
+        }
+        if (old) sel.value = old;
+
+    } catch (err) {
+        console.error("loadNodes:", err);
+    }
+}
+
+// --------------------------------------------------
+// LOAD CHANNELS (simple restored list)
+// --------------------------------------------------
+async function loadChannels() {
+    try {
+        const r = await fetch("/api/channels");
+        const chans = await r.json();
+
+        const box = document.getElementById("channelList");
+        box.innerHTML = "";
+
+        chans.forEach(ch => {
+            const row = document.createElement("div");
+            row.style.padding = "6px";
+            row.style.borderBottom = "1px solid #333";
+            row.style.cursor = "pointer";
+
+            row.innerHTML = `<b>${ch.name || "Channel"}</b> <span>#${ch.index}</span>`;
+
+            row.onclick = () => {
+                selectedChannel = ch.index;
+                showChannelDrawer(ch);
+                loadMessages();
+            };
+
+            box.appendChild(row);
+        });
+
+    } catch (err) {
+        console.error("loadChannels:", err);
+    }
+}
+
+// --------------------------------------------------
+// DRAWERS
+// --------------------------------------------------
+function openDrawer() {
+    document.getElementById("drawer").classList.add("open");
+}
+function closeDrawer() {
+    document.getElementById("drawer").classList.remove("open");
+}
+
+function openChannelDrawer() {
+    document.getElementById("channelDrawer").classList.add("open");
+}
+function closeChannelDrawer() {
+    document.getElementById("channelDrawer").classList.remove("open");
+}
+
+function showNodeDrawer(node) {
+    openDrawer();
+
+    const user = node.user || {};
+    const pos = node.position || {};
+
+    const name =
+        user.longName ||
+        user.shortName ||
+        user.id ||
+        node.num;
+
+    const lat = pos.latitude ?? (pos.latitudeI ? pos.latitudeI / 1e7 : "?");
+    const lon = pos.longitude ?? (pos.longitudeI ? pos.longitudeI / 1e7 : "?");
+
+    document.getElementById("drawerTitle").innerText = name;
+
+    document.getElementById("drawerContent").innerHTML = `
+        <div><b>ID:</b> ${user.id ?? node.num}</div>
+        <div><b>Short:</b> ${user.shortName ?? ""}</div>
+        <div><b>Long:</b> ${user.longName ?? ""}</div>
+        <hr>
+        <div><b>GPS:</b> ${lat}, ${lon}</div>
+        <div><b>Last Heard:</b> ${node.lastHeard ?? ""}</div>
+        <hr>
+        <div><b>SNR:</b> ${node.snr ?? "?"}</div>
+        <div><b>RSSI:</b> ${node.rssi ?? "?"}</div>
+    `;
+}
+
+// --------------------------------------------------
+// MAP COMMUNICATION
+// --------------------------------------------------
+function focusNodeOnMap(node) {
+    const pos = node.position || {};
+    const lat = pos.latitude ?? (pos.latitudeI ? pos.latitudeI / 1e7 : null);
+    const lon = pos.longitude ?? (pos.longitudeI ? pos.longitudeI / 1e7 : null);
+    if (lat == null || lon == null) return;
+
+    document.getElementById("mapframe").contentWindow.postMessage({
+        type: "focus",
+        lat,
+        lon
+    }, "*");
+}
+
+// ----------------------------------------------------------
+// RECEIVE SELECTION FROM MAP  (accept numeric OR string IDs)
+// ----------------------------------------------------------
+window.addEventListener("message", (event) => {
+    const msg = event.data;
+    if (!msg || msg.type !== "selectNode") return;
+
+    const id = msg.node;
+    if (!id) return;
+
+    let node = null;
+
+    for (const key in globalNodes) {
+        const n = globalNodes[key];
+        const user = n.user || {};
+
+        // match either numeric radio num or user.id string
+        if (
+            (n.num != null && String(n.num) === String(id)) ||
+            (user.id && String(user.id) === String(id))
+        ) {
+            node = n;
+            break;
+        }
+    }
+
+    if (!node) {
+        console.warn("No node matched selectNode:", id);
+        return;
+    }
+
+    // open drawer, focus map, set send target
+    showNodeDrawer(node);
+    focusNodeOnMap(node);
+
+    const sel = document.getElementById("sendTarget");
+    sel.value = node.num ?? id;
+});
+
+// --------------------------------------------------
+// SEND MESSAGE
+// --------------------------------------------------
+async function sendMessage() {
+    const text = document.getElementById("sendInput").value.trim();
+    const to = document.getElementById("sendTarget").value;
+
+    if (!text) return;
+
+    try {
+        await fetch("/api/send", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({text, to})
+        });
+        document.getElementById("sendInput").value = "";
+    } catch (err) {
+        console.error("send:", err);
+    }
+}
+
+// --------------------------------------------------
+// START INTERVAL LOADERS
+// --------------------------------------------------
+loadMessages();
+loadNodes();
+loadChannels();
+
+setInterval(loadMessages, 2000);
+setInterval(loadNodes, 4000);
+setInterval(loadChannels, 15000);
+
+</script>
+
+</body>
+</html>

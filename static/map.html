@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Mesh Map</title>
+
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+        }
+        #map {
+            width: 100%;
+            height: 100%;
+        }
+        .leaflet-popup-content {
+            font-size: 14px;
+        }
+        button.map-select-btn {
+            margin-top: 6px;
+            width: 100%;
+        }
+    </style>
+
+    <link rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+</head>
+
+<body>
+    <div id="map"></div>
+<script>
+// --------------------------------------------------
+// GLOBALS
+// --------------------------------------------------
+let map;
+let nodeMarkers = {};        // {nodeId: leafletMarker}
+let breadcrumbPoints = {};   // {nodeId: [[lat,lon], ...]}
+let breadcrumbLines = {};    // {nodeId: leafletPolyline}
+
+// --------------------------------------------------
+// TIME-AGO HELPER FOR LAST HEARD
+// --------------------------------------------------
+function timeAgoFromEpoch(epochSeconds) {
+    if (!epochSeconds || typeof epochSeconds !== "number") return "?";
+
+    const now = Date.now() / 1000;
+    let diff = Math.floor(now - epochSeconds);
+    if (diff < 0) diff = 0;
+
+    if (diff < 60) return diff + "s ago";
+
+    const mins = Math.floor(diff / 60);
+    if (mins < 60) return mins + "m ago";
+
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return hours + "h " + (mins % 60) + "m ago";
+
+    const days = Math.floor(hours / 24);
+    if (days === 1) return "yesterday";
+    if (days < 7) return days + "d ago";
+
+    const d = new Date(epochSeconds * 1000);
+    return d.toLocaleDateString() + " " +
+           d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+// --------------------------------------------------
+// INIT MAP
+// --------------------------------------------------
+map = L.map("map").setView([34.05, -118.25], 11);
+
+L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19
+}).addTo(map);
+
+// --------------------------------------------------
+// POPUP BUILDER  (ALL FIELDS INCLUDED)
+// --------------------------------------------------
+function buildPopup(n) {
+    const name =
+        n.longName ||
+        n.shortName ||
+        n.radioId ||
+        n.num ||
+        "Node";
+
+    const last =
+        typeof n.lastHeard === "number"
+            ? timeAgoFromEpoch(n.lastHeard)
+            : (n.lastHeard || "?");
+
+    const id = (n.num != null ? n.num : (n.radioId || ""));
+
+    return `
+        <div style="min-width:180px;">
+            <b>${name}</b><br>
+            ${n.shortName && n.longName ? `${n.shortName}<br>${n.longName}<br>` : ""}
+            <b>ID:</b> ${id || "?"}<br>
+            <b>SNR:</b> ${n.snr ?? "?"}<br>
+            <b>RSSI:</b> ${n.rssi ?? "?"}<br>
+            <b>Hops:</b> ${n.hops ?? "?"}<br>
+            <b>Last Heard:</b> ${last}<br>
+            ${id ? `<button class="map-select-btn" onclick="selectNodeFromMap('${id}')">Select</button>` : ""}
+        </div>
+    `;
+}
+
+// --------------------------------------------------
+// BREADCRUMB DRAWING
+// --------------------------------------------------
+function addBreadcrumbPoint(nodeId, lat, lon) {
+    if (nodeId == null) return;
+
+    if (!breadcrumbPoints[nodeId]) breadcrumbPoints[nodeId] = [];
+    breadcrumbPoints[nodeId].push([lat, lon]);
+
+    if (breadcrumbPoints[nodeId].length > 200) {
+        breadcrumbPoints[nodeId].shift();
+    }
+
+    if (breadcrumbLines[nodeId]) {
+        map.removeLayer(breadcrumbLines[nodeId]);
+    }
+
+    breadcrumbLines[nodeId] = L.polyline(breadcrumbPoints[nodeId], {
+        color: "#00ffff",
+        weight: 2
+    }).addTo(map);
+}
+
+// --------------------------------------------------
+// LOAD INITIAL POSITIONS  (from /api/positions)
+// --------------------------------------------------
+async function loadInitialPositions() {
+    try {
+        const r = await fetch("/api/positions");
+        const list = await r.json();
+
+        list.forEach(n => {
+            const id = n.num;   // numeric node ID from gateway
+            if (id == null) return;
+
+            if (!breadcrumbPoints[id]) breadcrumbPoints[id] = [];
+            breadcrumbPoints[id].push([n.lat, n.lon]);
+
+            const marker = L.marker([n.lat, n.lon]).addTo(map);
+            marker.bindPopup(buildPopup(n));
+
+            nodeMarkers[id] = marker;
+
+            breadcrumbLines[id] = L.polyline(breadcrumbPoints[id], {
+                color: "#00ffff",
+                weight: 2
+            }).addTo(map);
+        });
+
+    } catch (e) {
+        console.error("loadInitialPositions:", e);
+    }
+}
+
+// --------------------------------------------------
+// RECEIVE FOCUS EVENTS FROM DASHBOARD
+// --------------------------------------------------
+window.addEventListener("message", (event) => {
+    const msg = event.data;
+    if (!msg || msg.type !== "focus") return;
+
+    const lat = msg.lat;
+    const lon = msg.lon;
+    if (!(typeof lat === "number" && typeof lon === "number")) return;
+
+    map.setView([lat, lon], 16);
+
+    // marker for focus
+    if (window.focusMarker) {
+        window.focusMarker.setLatLng([lat, lon]);
+    } else {
+        window.focusMarker = L.marker([lat, lon]).addTo(map);
+    }
+});
+
+// --------------------------------------------------
+// SSE LIVE GPS
+// --------------------------------------------------
+function startSSE() {
+    const ev = new EventSource("/events");
+
+    ev.onmessage = evt => {
+        try {
+            const msg = JSON.parse(evt.data);
+
+            if (msg.type === "gps-update") {
+                const n = msg;
+
+                // Prefer numeric num to match /api/positions, fallback to node
+                const id = (n.num != null ? n.num : n.node);
+                if (id == null) return;
+
+                addBreadcrumbPoint(id, n.lat, n.lon);
+
+                // update marker
+                if (nodeMarkers[id]) {
+                    nodeMarkers[id].setLatLng([n.lat, n.lon]);
+                    nodeMarkers[id].setPopupContent(buildPopup(n));
+                } else {
+                    nodeMarkers[id] = L.marker([n.lat, n.lon])
+                        .addTo(map)
+                        .bindPopup(buildPopup(n));
+                }
+            }
+
+        } catch (e) {
+            console.error("SSE parse error:", e);
+        }
+    };
+
+    ev.onerror = () => {
+        console.warn("SSE connection lost");
+    };
+}
+
+// --------------------------------------------------
+// SELECT BUTTON → SEND TARGET (back to dashboard)
+// --------------------------------------------------
+function selectNodeFromMap(num) {
+    parent.postMessage({
+        type: "selectNode",
+        node: num
+    }, "*");
+}
+
+// --------------------------------------------------
+// MAIN START
+// --------------------------------------------------
+loadInitialPositions();
+startSSE();
+</script>
+
+</body>
+</html>

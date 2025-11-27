@@ -1,0 +1,51 @@
+# ---- Python cache / compiled ----
+__pycache__/
+*.pyc
+*.pyo
+
+# ---- Virtual environment ----
+venv/
+ENV/
+env/
+.venv/
+
+# ---- SQLite databases ----
+*.db
+*.sqlite
+*.sqlite3
+
+# ---- Logs ----
+*.log
+
+# ---- Backup files ----
+backups/
+*.bak
+*.old
+*.save
+*.tmp
+
+# ---- System / editor files ----
+.DS_Store
+Thumbs.db
+
+# ---- IDE junk ----
+.vscode/
+.idea/
+
+# ---- Node IDs or sensitive cache (if ever added) ----
+*.json.cache
+
+# ---- Local development artifacts ----
+*.swp
+*.swo
+
+# ---- Map tiles (in case caching is added later) ----
+tiles/
+
+# ---- Systemd / local deployment files ----
+*.service
+*.timer
+
+# ---- Do not track dashboard output artifacts ----
+static/map.html.save*
+static/*.backup
