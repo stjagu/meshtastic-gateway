@@ -47,7 +47,7 @@ body {
 /* RIGHT PANELS (A-LAYOUT) */
 #rightPanels {
   display: grid;
-  grid-template-rows: 1fr 1fr 2fr; /* relative, not viewport-based */
+  grid-template-rows: 1fr 1.5fr 2fr; /* relative, not viewport-based */
   gap: 12px;
   min-height: 0;
 }
@@ -493,13 +493,15 @@ window.addEventListener("keydown", (e) => {
 });
 
 // --------------------------------------------------
-// LOAD MESSAGES (restored format + colors)
+// LOAD MESSAGES (format + colors + click-to-reply + focus map)
 // --------------------------------------------------
 async function loadMessages() {
   try {
     const r = await fetch("/api/messages");
     const msgs = await r.json();
+
     const box = document.getElementById("messages");
+    if (!box) return; // safety
     box.innerHTML = "";
 
     const filtered = msgs.filter(m => {
@@ -508,42 +510,63 @@ async function loadMessages() {
       return Number(chan) === Number(selectedChannel);
     });
 
-filtered.slice(0, 120).forEach(m => {
-  const div = document.createElement("div");
-  div.className = "msg-line " + classifyMessage(m.message || "");
-  div.innerHTML = `[${m.timestamp}] <b>${m.from}</b>: ${m.message}`;
+    filtered.slice(0, 120).forEach(m => {
+      const div = document.createElement("div");
+      div.className = "msg-line " + classifyMessage(m.message || "");
+      div.innerHTML = `[${m.timestamp}] <b>${m.from}</b>: ${m.message}`;
 
-  // ✅ click-to-reply wiring
-  div.style.cursor = "pointer";
-  div.title = "Click to reply";
+      div.style.cursor = "pointer";
+      div.title = "Click to reply";
 
-  div.onclick = () => {
-    const fromLabel = m.from; // e.g. "!e4044dc8"
-    const chan = m.channel ?? m.channelIndex ?? null;
+      div.onclick = () => {
+        const fromLabel = m.from; // e.g. "!e4044dc8"
+        const chan = m.channel ?? m.channelIndex ?? null;
 
-    // map "!xxxx" -> node.num
-    let toNum = null;
-    for (const k in globalNodes) {
-      const n = globalNodes[k];
-      const uid = n?.user?.id;
-      if (uid && uid === fromLabel) {
-        toNum = n.num;
-        break;
-      }
-    }
+        let toNum = null;
+        let nodeObj = null;
 
-    // fallback if it's already numeric
-    if (!toNum) {
-      const maybeNum = parseInt(fromLabel, 10);
-      if (!isNaN(maybeNum)) toNum = maybeNum;
-    }
+        // map "!xxxx" -> node.num AND grab node object for focus/drawer
+        for (const k in globalNodes) {
+          const n = globalNodes[k];
+          const uid = n?.user?.id;
+          if (uid && uid === fromLabel) {
+            toNum = n.num;
+            nodeObj = n;
+            break;
+          }
+        }
 
-    if (toNum) setReplyMode(toNum, fromLabel, chan);
-    else setReplyMode("", fromLabel, chan);
-  };
+        // fallback if it's already numeric
+        if (toNum == null) {
+          const maybeNum = parseInt(fromLabel, 10);
+          if (!isNaN(maybeNum)) toNum = maybeNum;
+        }
 
-  box.appendChild(div);
-});
+        // focus + drawer (only if functions exist)
+        if (nodeObj) {
+          if (typeof focusNodeOnMap === "function") focusNodeOnMap(nodeObj);
+          if (typeof showNodeDrawer === "function") showNodeDrawer(nodeObj);
+        } else if (toNum != null) {
+          // try to find node by num
+          for (const k in globalNodes) {
+            const n = globalNodes[k];
+            if (n?.num != null && Number(n.num) === Number(toNum)) {
+              if (typeof focusNodeOnMap === "function") focusNodeOnMap(n);
+              if (typeof showNodeDrawer === "function") showNodeDrawer(n);
+              break;
+            }
+          }
+        }
+
+        // reply mode
+        if (typeof setReplyMode === "function") {
+          if (toNum != null) setReplyMode(toNum, fromLabel, chan);
+          else setReplyMode("", fromLabel, chan);
+        }
+      };
+
+      box.appendChild(div);
+    });
 
     if (selectedChannel !== null && filtered.length === 0) {
       box.innerHTML = `<div style="opacity:.7;">No messages found for channel ${selectedChannel} in current server LIMIT.</div>`;
@@ -552,6 +575,7 @@ filtered.slice(0, 120).forEach(m => {
     console.error("loadMessages:", err);
   }
 }
+
 // --------------------------------------------------
 // LOAD NODES
 // --------------------------------------------------
