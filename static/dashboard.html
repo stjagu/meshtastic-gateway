@@ -225,6 +225,46 @@ body {
 let globalNodes = {};
 let selectedChannel = null;
 
+
+// --------------------------------------------------
+// REPLY MODE (must be defined before loadMessages)
+// --------------------------------------------------
+let replyMode = null; // { to:"165", from:"!e4044dc8", channel:0 } or null
+
+function setReplyMode(toValue, fromLabel, channel) {
+  replyMode = {
+    to: String(toValue || ""),
+    from: fromLabel || "",
+    channel: channel ?? null
+  };
+
+  const sel = document.getElementById("sendTarget");
+  if (sel && replyMode.to) sel.value = replyMode.to;
+
+  const badge = document.getElementById("replyBadge");
+  if (badge) {
+    badge.style.display = "block";
+    badge.textContent = `Replying to ${replyMode.from || replyMode.to} (Esc to clear)`;
+  }
+
+  const input = document.getElementById("sendInput");
+  if (input) input.focus();
+}
+
+function clearReplyMode() {
+  replyMode = null;
+
+  const badge = document.getElementById("replyBadge");
+  if (badge) badge.style.display = "none";
+
+  const sel = document.getElementById("sendTarget");
+  if (sel) sel.value = "";
+}
+
+window.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") clearReplyMode();
+});
+
 // --------------------------------------------------
 // MESSAGE CLASSIFIER (restored A-version colors)
 // --------------------------------------------------
@@ -252,12 +292,12 @@ async function loadMessages() {
       return Number(chan) === Number(selectedChannel);
     });
 
-    filtered.slice(0, 120).forEach(m => {
+filtered.slice(0, 120).forEach(m => {
   const div = document.createElement("div");
   div.className = "msg-line " + classifyMessage(m.message || "");
   div.innerHTML = `[${m.timestamp}] <b>${m.from}</b>: ${m.message}`;
 
-  // ---- CLICK TO REPLY ----
+  // ✅ click-to-reply wiring
   div.style.cursor = "pointer";
   div.title = "Click to reply";
 
@@ -265,31 +305,24 @@ async function loadMessages() {
     const fromLabel = m.from; // e.g. "!e4044dc8"
     const chan = m.channel ?? m.channelIndex ?? null;
 
+    // map "!xxxx" -> node.num
     let toNum = null;
-
-    // match globalNodes user.id -> numeric n.num (fallback to numeric key)
     for (const k in globalNodes) {
       const n = globalNodes[k];
       const uid = n?.user?.id;
-
       if (uid && uid === fromLabel) {
-        if (n?.num != null) {
-          toNum = n.num;
-        } else {
-          const keyNum = parseInt(k, 10);
-          if (!isNaN(keyNum)) toNum = keyNum;
-        }
+        toNum = n.num;
         break;
       }
     }
 
-    // fallback: if fromLabel itself is numeric
-    if (toNum == null) {
+    // fallback if it's already numeric
+    if (!toNum) {
       const maybeNum = parseInt(fromLabel, 10);
       if (!isNaN(maybeNum)) toNum = maybeNum;
     }
 
-    if (toNum != null) setReplyMode(toNum, fromLabel, chan);
+    if (toNum) setReplyMode(toNum, fromLabel, chan);
     else setReplyMode("", fromLabel, chan);
   };
 
@@ -531,58 +564,45 @@ window.addEventListener("message", (event) => {
 });
 
 // --------------------------------------------------
-// SEND MESSAGE
+// SEND MESSAGE  (NOW INCLUDES CHANNEL)
 // --------------------------------------------------
 async function sendMessage() {
-    const text = document.getElementById("sendInput").value.trim();
-    const to = document.getElementById("sendTarget").value;
+  const input = document.getElementById("sendInput");
+  const textRaw = input.value.trim();
+  const sel = document.getElementById("sendTarget");
+  const to = sel.value;
 
-    if (!text) return;
+  if (!textRaw) return;
 
-    try {
-        await fetch("/api/send", {
-            method: "POST",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({text, to})
-        });
-        document.getElementById("sendInput").value = "";
-    } catch (err) {
-        console.error("send:", err);
-    }
+  const channel =
+    (replyMode && replyMode.channel != null) ? Number(replyMode.channel) :
+    (selectedChannel != null) ? Number(selectedChannel) :
+    0;
+
+  // ✅ Key rule:
+  // If replying to something that happened on channel 1+,
+  // send to the CHANNEL (broadcast), NOT a destinationId DM.
+  let sendTo = to;               // default behavior
+  let text = textRaw;
+
+  if (replyMode && channel > 0) {
+    sendTo = "";                 // broadcast
+    // optional: tag so it feels like a reply
+    if (replyMode.from) text = `@${replyMode.from} ${textRaw}`;
+  }
+
+  try {
+    await fetch("/api/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, to: sendTo, channel })
+    });
+
+    input.value = "";
+  } catch (err) {
+    console.error("send:", err);
+  }
 }
-
-
-let replyMode = null; // { to:"165", from:"!e4044dc8", channel:0 } or null
-
-function setReplyMode(toValue, fromLabel, channel) {
-    replyMode = { to: String(toValue || ""), from: fromLabel || "", channel: channel ?? null };
-
-    const sel = document.getElementById("sendTarget");
-    if (sel && replyMode.to) sel.value = replyMode.to;
-
-    const badge = document.getElementById("replyBadge");
-    if (badge) {
-        badge.style.display = "block";
-        badge.textContent = `Replying to ${replyMode.from || replyMode.to} (tap Esc to clear)`;
-    }
-
-    const input = document.getElementById("sendInput");
-    if (input) input.focus();
-}
-
-function clearReplyMode() {
-    replyMode = null;
-    const badge = document.getElementById("replyBadge");
-    if (badge) badge.style.display = "none";
-
-    // optionally revert dropdown to Broadcast:
-    const sel = document.getElementById("sendTarget");
-    if (sel) sel.value = "";
-}
-
-window.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") clearReplyMode();
-});
 
 
 // --------------------------------------------------

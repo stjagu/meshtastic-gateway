@@ -364,19 +364,23 @@ def api_send():
     try:
         data = request.get_json(force=True, silent=True) or {}
         text = data.get("text")
-        dest = data.get("to")  # numeric node ID or ""
+        dest = data.get("to")          # numeric node ID or ""
+        chan = data.get("channel", 0)  # channel index (0-7 typically)
 
         if not text:
             return jsonify({"status": "error", "error": "Missing text"}), 400
 
-        if dest:
-            # dest is numeric radio node ID
-            interface.sendText(text, destinationId=int(dest))
-        else:
-            # broadcast on primary
-            interface.sendText(text)
+        try:
+            chan = int(chan)
+        except Exception:
+            chan = 0
 
-        return jsonify({"status": "sent"})
+        if dest:
+            interface.sendText(text, destinationId=int(dest), channelIndex=chan)
+        else:
+            interface.sendText(text, channelIndex=chan)
+
+        return jsonify({"status": "sent", "channel": chan})
 
     except Exception as e:
         print("Send error:", e)
