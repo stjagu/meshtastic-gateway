@@ -215,6 +215,7 @@ body {
     <select id="sendTarget"><option value="">Broadcast</option></select>
     <input id="sendInput" placeholder="Send message…">
     <button id="sendBtn" onclick="sendMessage()">Send</button>
+    <div id="replyBadge" style="display:none; color:#bbb; font-size:12px; margin-left:6px;"></div>
 </div>
 
 <script>
@@ -252,11 +253,48 @@ async function loadMessages() {
     });
 
     filtered.slice(0, 120).forEach(m => {
-      const div = document.createElement("div");
-      div.className = "msg-line " + classifyMessage(m.message || "");
-      div.innerHTML = `[${m.timestamp}] <b>${m.from}</b>: ${m.message}`;
-      box.appendChild(div);
-    });
+  const div = document.createElement("div");
+  div.className = "msg-line " + classifyMessage(m.message || "");
+  div.innerHTML = `[${m.timestamp}] <b>${m.from}</b>: ${m.message}`;
+
+  // ---- CLICK TO REPLY ----
+  div.style.cursor = "pointer";
+  div.title = "Click to reply";
+
+  div.onclick = () => {
+    const fromLabel = m.from; // e.g. "!e4044dc8"
+    const chan = m.channel ?? m.channelIndex ?? null;
+
+    let toNum = null;
+
+    // match globalNodes user.id -> numeric n.num (fallback to numeric key)
+    for (const k in globalNodes) {
+      const n = globalNodes[k];
+      const uid = n?.user?.id;
+
+      if (uid && uid === fromLabel) {
+        if (n?.num != null) {
+          toNum = n.num;
+        } else {
+          const keyNum = parseInt(k, 10);
+          if (!isNaN(keyNum)) toNum = keyNum;
+        }
+        break;
+      }
+    }
+
+    // fallback: if fromLabel itself is numeric
+    if (toNum == null) {
+      const maybeNum = parseInt(fromLabel, 10);
+      if (!isNaN(maybeNum)) toNum = maybeNum;
+    }
+
+    if (toNum != null) setReplyMode(toNum, fromLabel, chan);
+    else setReplyMode("", fromLabel, chan);
+  };
+
+  box.appendChild(div);
+});
 
     if (selectedChannel !== null && filtered.length === 0) {
       box.innerHTML = `<div style="opacity:.7;">No messages found for channel ${selectedChannel} in current server LIMIT.</div>`;
@@ -512,6 +550,40 @@ async function sendMessage() {
         console.error("send:", err);
     }
 }
+
+
+let replyMode = null; // { to:"165", from:"!e4044dc8", channel:0 } or null
+
+function setReplyMode(toValue, fromLabel, channel) {
+    replyMode = { to: String(toValue || ""), from: fromLabel || "", channel: channel ?? null };
+
+    const sel = document.getElementById("sendTarget");
+    if (sel && replyMode.to) sel.value = replyMode.to;
+
+    const badge = document.getElementById("replyBadge");
+    if (badge) {
+        badge.style.display = "block";
+        badge.textContent = `Replying to ${replyMode.from || replyMode.to} (tap Esc to clear)`;
+    }
+
+    const input = document.getElementById("sendInput");
+    if (input) input.focus();
+}
+
+function clearReplyMode() {
+    replyMode = null;
+    const badge = document.getElementById("replyBadge");
+    if (badge) badge.style.display = "none";
+
+    // optionally revert dropdown to Broadcast:
+    const sel = document.getElementById("sendTarget");
+    if (sel) sel.value = "";
+}
+
+window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") clearReplyMode();
+});
+
 
 // --------------------------------------------------
 // START INTERVAL LOADERS
