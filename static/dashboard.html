@@ -14,6 +14,7 @@ body {
     background: #1a1a1a;
     color: #eee;
     font-family: Arial, sans-serif;
+    padding-bottom: 70px;
 }
 
 /* --------------------------------------------------
@@ -24,11 +25,14 @@ body {
     display: grid;
     grid-template-columns: 1fr 350px;
     grid-template-rows: 1fr;
-    height: 100vh;
+    height: calc(100vh - 52px);
     gap: 12px;
     padding: 10px;
+    padding-bottom: 62px;
     box-sizing: border-box;
 }
+
+
 
 /* MAP */
 #mapCard {
@@ -42,9 +46,10 @@ body {
 
 /* RIGHT PANELS (A-LAYOUT) */
 #rightPanels {
-    display: grid;
-    grid-template-rows: 25vh 55vh 45vh; /* A-Layout restored */
-    gap: 12px;
+  display: grid;
+  grid-template-rows: 1fr 1fr 2fr; /* relative, not viewport-based */
+  gap: 12px;
+  min-height: 0;
 }
 
 .panel {
@@ -53,11 +58,14 @@ body {
     padding: 10px;
     display: flex;
     flex-direction: column;
+    min-height: 0;
+    
 }
 
 .scroll-area {
     flex: 1;
     overflow-y: auto;
+    min-height: 0;
 }
 
 /* --------------------------------------------------
@@ -68,6 +76,21 @@ body {
 .msg-tele  { color: #ffb347; }   /* orange */
 .msg-alert { color: #ff6a6a; }   /* red */
 .msg-other { color: #bbb; }      /* grey */
+
+
+/* -----------------------------
+   Message rows
+----------------------------- */
+.msg-line {
+    padding: 4px 0;
+    margin-bottom: 4px;
+    line-height: 1.35;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+
+.msg-line:last-child {
+    border-bottom: none;
+}
 
 /* --------------------------------------------------
    DRAWERS
@@ -158,6 +181,36 @@ body {
   background: #1b2a44;
 }
 
+#terminalPanel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+#terminal {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;   /* CRITICAL: allows flex scrolling */
+}
+
+#terminalPanel {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+#terminal {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+#terminalControls {
+  flex-shrink: 0;
+}
+
+
+
 </style>
 </head>
 <body>
@@ -185,12 +238,30 @@ body {
             <div id="messages" class="scroll-area"></div>
         </div>
 
-        <div id="nodesPanel" class="panel">
-            <h2>Nodes</h2>
-            <div id="nodeList" class="scroll-area"></div>
-        </div>
+<div id="terminalPanel" class="panel">
+  <h2>Terminal</h2>
 
-    </div>
+  <div id="terminal" class="scroll-area" style="font-family: monospace; font-size: 12px;"></div>
+
+  <div id="terminalControls" style="display:flex; gap:8px; margin-top:8px;">
+    <input id="terminalInput"
+           placeholder="Type command… (Enter to send)"
+           style="flex:1; height:34px; background:#0b0b0b; color:#eee; border:1px solid #333; border-radius:6px; padding:0 10px; font-family:monospace;" />
+    <button id="terminalSendBtn"
+            onclick="sendTerminal()"
+            style="height:34px; padding:0 14px; border:0; border-radius:6px; background:#0078ff; color:white;">
+      Send
+    </button>
+  </div>
+
+  <div id="nodeList" style="display:none;"></div>
+</div>
+
+  <!-- keep loadNodes() happy -->
+  <div id="nodeList" style="display:none;"></div>
+</div>
+
+    
 </div>
 
 <!-- DRAWERS -->
@@ -277,6 +348,151 @@ function classifyMessage(msg) {
 }
 
 // --------------------------------------------------
+// Terminal
+// --------------------------------------------------
+function addTerminalLine(line) {
+  const term = document.getElementById("terminal");
+  if (!term) return;
+
+  const el = document.createElement("div");
+  el.textContent = line;
+  term.prepend(el);
+
+  while (term.childNodes.length > 250) term.removeChild(term.lastChild);
+}
+
+function startTerminalSSE() {
+  const ev = new EventSource("/events");
+
+  ev.onmessage = (evt) => {
+    try {
+      const data = JSON.parse(evt.data);
+
+      if (data.type === "packet") {
+        const pkt = data.packet || {};
+        const from = pkt.fromId || pkt.from || "?";
+        const decoded = pkt.decoded || {};
+        const port = decoded.portnum || "";
+        const text = decoded.text || "";
+        const pos = decoded.position;
+
+        if (port === "TEXT_MESSAGE_APP" && text) {
+          addTerminalLine(`${from} [TEXT] ${text}`);
+        } 
+        else if (port === "POSITION_APP" && pos) {
+          const lat = pos.latitude ?? (pos.latitudeI ? pos.latitudeI / 1e7 : "?");
+          const lon = pos.longitude ?? (pos.longitudeI ? pos.longitudeI / 1e7 : "?");
+          addTerminalLine(`${from} [GPS] ${lat}, ${lon}`);
+        } 
+        else {
+          addTerminalLine(`${from} ${port}`);
+        }
+      }
+
+    } catch (e) {
+      // swallow malformed SSE packets safely
+      console.warn("Terminal parse error", e);
+    }
+  };
+
+  ev.onerror = () => {
+    addTerminalLine("[SSE disconnected]");
+  };
+}
+
+// --------------------------------------------------
+// Terminal Input
+// --------------------------------------------------
+function appendTerminalLine(text) {
+  const term = document.getElementById("terminal");
+  if (!term) return;
+
+  const line = document.createElement("div");
+  line.style.whiteSpace = "pre-wrap";
+  line.textContent = text;
+  term.prepend(line);
+
+  while (term.childNodes.length > 300) term.removeChild(term.lastChild);
+}
+
+async function sendTerminal() {
+  const inp = document.getElementById("terminalInput");
+  if (!inp) return;
+
+  const raw = inp.value.trim();
+  if (!raw) return;
+
+  // Defaults
+  let to = ""; // broadcast
+  let channel = (selectedChannel != null) ? Number(selectedChannel) : 0;
+
+  // Parse /dm and /ch in any order
+  const parts = raw.split(/\s+/);
+  const msgParts = [];
+
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i];
+
+    if (p === "/dm" && parts[i + 1]) {
+      to = parts[i + 1];
+      i++;
+      continue;
+    }
+
+    if ((p === "/ch" || p === "/channel") && parts[i + 1]) {
+      const maybe = parseInt(parts[i + 1], 10);
+      if (!isNaN(maybe)) channel = maybe;
+      i++;
+      continue;
+    }
+
+    if (p === "/reply") {
+      const sel = document.getElementById("sendTarget");
+      if (sel && sel.value) to = sel.value;
+      continue;
+    }
+
+    msgParts.push(p);
+  }
+
+  const text = msgParts.join(" ").trim();
+  if (!text) {
+    appendTerminalLine("(no message text)");
+    return;
+  }
+
+  appendTerminalLine(`mesh> ${raw}`);
+  appendTerminalLine(`→ to=${to || "broadcast"}  ch=${channel}  text="${text}"`);
+
+  try {
+    const r = await fetch("/api/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, to, channel })
+    });
+
+    const res = await r.json();
+    if (res.status === "sent") {
+      appendTerminalLine("✓ sent");
+      inp.value = "";
+      inp.focus();
+    } else {
+      appendTerminalLine(`✗ send failed: ${res.error || "unknown error"}`);
+    }
+  } catch (e) {
+    appendTerminalLine(`✗ send failed: ${e}`);
+  }
+}
+
+// Enter to send while in terminal input
+window.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && document.activeElement?.id === "terminalInput") {
+    e.preventDefault();
+    sendTerminal();
+  }
+});
+
+// --------------------------------------------------
 // LOAD MESSAGES (restored format + colors)
 // --------------------------------------------------
 async function loadMessages() {
@@ -340,61 +556,66 @@ filtered.slice(0, 120).forEach(m => {
 // LOAD NODES
 // --------------------------------------------------
 async function loadNodes() {
-    try {
-        const r = await fetch("/api/nodes");
-        globalNodes = await r.json();
+  try {
+    const r = await fetch("/api/nodes");
+    globalNodes = await r.json();
 
-        const box = document.getElementById("nodeList");
-        box.innerHTML = "";
+    const box = document.getElementById("nodeList");
+    if (box) box.innerHTML = "";
 
-        for (const key in globalNodes) {
-            const n = globalNodes[key];
-            const user = n.user || {};
-            const name =
-                user.longName ||
-                user.shortName ||
-                user.id ||
-                n.num ||
-                "Node";
+    for (const key in globalNodes) {
+      const n = globalNodes[key];
+      const user = n.user || {};
 
-            const row = document.createElement("div");
-            row.className = "node-row";
-            row.style.padding = "6px";
-            row.style.borderBottom = "1px solid #333";
-            row.style.cursor = "pointer";
+      const name =
+        user.longName ||
+        user.shortName ||
+        user.id ||
+        n.num ||
+        "Node";
 
-            row.innerHTML = `
-                <div class="node-name">${name}</div>
-                <div class="node-meta" style="opacity:.7; font-size:12px;">
-                    SNR ${n.snr ?? "?"} | RSSI ${n.rssi ?? "?"} | Hops ${n.hops ?? "?"}
-                </div>
-            `;
+      if (box) {
+        const row = document.createElement("div");
+        row.className = "node-row";
+        row.style.padding = "6px";
+        row.style.borderBottom = "1px solid #333";
+        row.style.cursor = "pointer";
 
-            row.onclick = () => {
-                showNodeDrawer(n);
-                focusNodeOnMap(n);
+        row.innerHTML = `
+          <div class="node-name">${name}</div>
+          <div class="node-meta" style="opacity:.7; font-size:12px;">
+            SNR ${n.snr ?? "?"} | RSSI ${n.rssi ?? "?"} | Hops ${n.hops ?? "?"}
+          </div>
+        `;
 
-                const sel = document.getElementById("sendTarget");
-                sel.value = n.num ?? user.id ?? "";
-            };
+        row.onclick = () => {
+          showNodeDrawer(n);
+          focusNodeOnMap(n);
+          const target = document.getElementById("sendTarget");
+          if (target) target.value = n.num ?? user.id ?? "";
+        };
 
-            box.appendChild(row);
-        }
-
-        // send dropdown update
-        const sel = document.getElementById("sendTarget");
-        const old = sel.value;
-
-        sel.innerHTML = `<option value="">Broadcast</option>`;
-        for (const key in globalNodes) {
-            const n = globalNodes[key];
-            if (n.num) sel.innerHTML += `<option value="${n.num}">${n.num}</option>`;
-        }
-        if (old) sel.value = old;
-
-    } catch (err) {
-        console.error("loadNodes:", err);
+        box.appendChild(row);
+      }
     }
+
+    // ---- update send dropdown (reuse variable name ONCE) ----
+    const sendSel = document.getElementById("sendTarget");
+    if (!sendSel) return;
+
+    const old = sendSel.value;
+    sendSel.innerHTML = `<option value="">Broadcast</option>`;
+
+    for (const key in globalNodes) {
+      const n = globalNodes[key];
+      if (n.num) sendSel.innerHTML += `<option value="${n.num}">${n.num}</option>`;
+    }
+
+    if (old) sendSel.value = old;
+
+  } catch (err) {
+    console.error("loadNodes:", err);
+  }
 }
 
 // --------------------------------------------------
@@ -611,6 +832,7 @@ async function sendMessage() {
 loadMessages();
 loadNodes();
 loadChannels();
+startTerminalSSE();
 
 setInterval(loadMessages, 2000);
 setInterval(loadNodes, 4000);
