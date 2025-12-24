@@ -144,6 +144,20 @@ body {
     padding: 0 16px;
 }
 
+/* -------------------------------
+    Channels
+    ------------------------------ */
+    .channel-row {
+  padding: 6px;
+  border-bottom: 1px solid #333;
+  cursor: pointer;
+}
+.channel-row:hover { background: #222; }
+.channel-row.selected {
+  outline: 2px solid #0078ff;
+  background: #1b2a44;
+}
+
 </style>
 </head>
 <body>
@@ -225,25 +239,32 @@ function classifyMessage(msg) {
 // LOAD MESSAGES (restored format + colors)
 // --------------------------------------------------
 async function loadMessages() {
-    try {
-        const r = await fetch("/api/messages");
-        const msgs = await r.json();
+  try {
+    const r = await fetch("/api/messages");
+    const msgs = await r.json();
+    const box = document.getElementById("messages");
+    box.innerHTML = "";
 
-        const box = document.getElementById("messages");
-        box.innerHTML = "";
+    const filtered = msgs.filter(m => {
+      if (selectedChannel === null) return true;
+      const chan = m.channel ?? m.channelIndex ?? 0;
+      return Number(chan) === Number(selectedChannel);
+    });
 
-        msgs.slice(0, 80).forEach(m => {
-            const div = document.createElement("div");
-            div.className = "msg-line " + classifyMessage(m.message);
-            div.innerHTML = `[${m.timestamp}] <b>${m.from}</b>: ${m.message}`;
-            box.appendChild(div);
-        });
+    filtered.slice(0, 120).forEach(m => {
+      const div = document.createElement("div");
+      div.className = "msg-line " + classifyMessage(m.message || "");
+      div.innerHTML = `[${m.timestamp}] <b>${m.from}</b>: ${m.message}`;
+      box.appendChild(div);
+    });
 
-    } catch (err) {
-        console.error("loadMessages:", err);
+    if (selectedChannel !== null && filtered.length === 0) {
+      box.innerHTML = `<div style="opacity:.7;">No messages found for channel ${selectedChannel} in current server LIMIT.</div>`;
     }
+  } catch (err) {
+    console.error("loadMessages:", err);
+  }
 }
-
 // --------------------------------------------------
 // LOAD NODES
 // --------------------------------------------------
@@ -317,16 +338,47 @@ async function loadChannels() {
         box.innerHTML = "";
 
         chans.forEach(ch => {
+            const idx = ch.index ?? ch.id ?? 0;
+
+            const name =
+                (ch.name && ch.name.trim() !== "")
+                    ? ch.name
+                    : (idx === 0 || ch.primary ? "Primary Channel" : `Channel ${idx}`);
+
             const row = document.createElement("div");
-            row.style.padding = "6px";
-            row.style.borderBottom = "1px solid #333";
-            row.style.cursor = "pointer";
+            row.className = "channel-row";
 
-            row.innerHTML = `<b>${ch.name || "Channel"}</b> <span>#${ch.index}</span>`;
+            // keep highlight in sync on re-render
+            if (selectedChannel !== null && Number(selectedChannel) === Number(idx)) {
+                row.classList.add("selected");
+            }
 
+            row.innerHTML = `
+                <div><b>${(idx === 0 || ch.primary) ? "⭐ " : ""}${name}</b>
+                    <span style="opacity:.7; font-size:11px;">(#${idx})</span>
+                </div>
+                <div style="opacity:.7; font-size:12px;">
+                    ${(ch.psk && ch.psk !== "AQ==") ? "Encrypted" : "Default"} ·
+                    ${ch.uplinkEnabled ? "Uplink" : "No Uplink"} ·
+                    ${ch.downlinkEnabled ? "Downlink" : "No Downlink"}
+                </div>
+            `;
+            
             row.onclick = () => {
-                selectedChannel = ch.index;
-                showChannelDrawer(ch);
+                // toggle off if clicking same channel again
+                if (selectedChannel !== null && Number(selectedChannel) === Number(idx)) {
+                    selectedChannel = null;
+                    document.querySelectorAll(".channel-row").forEach(r => r.classList.remove("selected"));
+                } else {
+                    selectedChannel = idx;
+                    document.querySelectorAll(".channel-row").forEach(r => r.classList.remove("selected"));
+                    row.classList.add("selected");
+                }
+
+                // optional drawer if you have it
+                if (typeof showChannelDrawer === "function") showChannelDrawer(ch);
+
+                // refresh message list using the new filter
                 loadMessages();
             };
 

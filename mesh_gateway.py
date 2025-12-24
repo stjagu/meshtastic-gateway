@@ -141,8 +141,23 @@ def save_packet(packet: dict):
     to_id = packet.get("toId") or str(to_num)
 
     decoded = packet.get("decoded", {}) or {}
-    chan = decoded.get("channel") or decoded.get("channelIndex") or 0
+
+    # Prefer top-level channel fields (some firmwares put channel at $)
+    chan = (
+        packet.get("channel")
+        or packet.get("channelIndex")
+        or decoded.get("channel")
+        or decoded.get("channelIndex")
+        or 0
+    )
+
+    try:
+        chan = int(chan)
+    except Exception:
+        chan = 0
+
     port = decoded.get("portnum", "")
+    # ... keep the rest of your save_packet logic here ...
 
     # ------------------ TEXT ------------------
     if port == "TEXT_MESSAGE_APP":
