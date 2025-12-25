@@ -447,6 +447,70 @@ def api_positions():
     return jsonify(out)
 
 
+# ===========================================================
+#  API: TERMINATOR BUTTON
+# ===========================================================
+@app.route("/api/command/terminator", methods=["POST"])
+def api_terminator():
+    data = request.get_json(force=True, silent=True) or {}
+    chan = data.get("channel", 0)
+
+    try:
+        chan = int(chan)
+    except Exception:
+        chan = 0
+
+    # 1) Decide WHAT position to send
+    # Option: use your own node's current position if available.
+    # Replace YOUR_NODE_NUM with the gateway's node num if you know it,
+    # or pick the most recently heard node with position.
+    lat = lon = None
+
+    try:
+        # Example: pick first node that has position
+        nodes = interface.nodes or {}
+        for _, n in nodes.items():
+            pos = (n.get("position") or {})
+            lat = pos.get("latitude")
+            lon = pos.get("longitude")
+            if lat is None and isinstance(pos.get("latitudeI"), (int, float)):
+                lat = pos["latitudeI"] / 1e7
+            if lon is None and isinstance(pos.get("longitudeI"), (int, float)):
+                lon = pos["longitudeI"] / 1e7
+            if lat is not None and lon is not None:
+                break
+    except Exception:
+        pass
+
+    # 2) Send a TRUE position packet if we have coordinates
+    sent_pos = False
+    if lat is not None and lon is not None:
+        try:
+            # Depending on meshtastic-python version, sendPosition may or may not accept channelIndex.
+            # Try with channelIndex first; fallback to without it.
+            try:
+                interface.sendPosition(latitude=lat, longitude=lon, channelIndex=chan)
+            except TypeError:
+                interface.sendPosition(latitude=lat, longitude=lon)
+            sent_pos = True
+        except Exception as e:
+            print("terminator sendPosition error:", e)
+
+    # 3) Send a status TEXT on the selected channel
+    try:
+        interface.sendText("🚨 GPS Positioning status broadcast", channelIndex=chan)
+    except Exception as e:
+        print("terminator sendText error:", e)
+        return jsonify({"status": "error", "error": str(e), "channel": chan}), 500
+
+    return jsonify({
+        "status": "sent",
+        "channel": chan,
+        "sent_position": sent_pos,
+        "lat": lat,
+        "lon": lon
+    })
+
 
 
 # ===========================================================

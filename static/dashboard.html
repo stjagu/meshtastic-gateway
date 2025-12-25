@@ -240,6 +240,19 @@ body {
 
 <div id="terminalPanel" class="panel">
   <h2>Terminal</h2>
+  
+  <div style="display:flex; gap:8px; margin-bottom:6px;">
+  <button onclick="terminator()"
+          style="flex:1;
+                 height:32px;
+                 background:#c0392b;
+                 color:white;
+                 border:none;
+                 border-radius:6px;
+                 font-weight:bold;">
+    ☢ GPS Positioning Update
+  </button>
+</div>
 
   <div id="terminal" class="scroll-area" style="font-family: monospace; font-size: 12px;"></div>
 
@@ -491,6 +504,29 @@ window.addEventListener("keydown", (e) => {
     sendTerminal();
   }
 });
+
+
+// ---------------------------------------------------
+// SEND GPS BUTTON
+// ---------------------------------------------------
+async function terminator() {
+  if (!confirm("Send GPS position + status broadcast?")) return;
+
+  const channel = (selectedChannel != null) ? Number(selectedChannel) : 0;
+
+  try {
+    const r = await fetch("/api/command/terminator", {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({ channel })
+    });
+
+    const res = await r.json();
+    appendTerminal(`> TERMINATOR: ${res.status || "OK"} (requested ch ${channel}, used ch ${res.channel ?? "?"})`);
+  } catch (e) {
+    appendTerminal(`> TERMINATOR ERROR: ${e}`);
+  }
+}
 
 // --------------------------------------------------
 // LOAD MESSAGES (format + colors + click-to-reply + focus map)
