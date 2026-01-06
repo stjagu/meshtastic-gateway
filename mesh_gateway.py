@@ -4,6 +4,8 @@ import time
 import json
 import queue
 import types
+import threading
+import paho.mqtt.client as mqtt
 import sqlite3
 from datetime import datetime
 
@@ -244,6 +246,79 @@ def save_packet(packet: dict):
     conn.close()
 
 
+# ===========================================================
+#  MQTT BRIDGE (publish packets + accept commands)
+# ===========================================================
+MQTT_ENABLED = True
+MQTT_HOST = "127.0.0.1"
+MQTT_PORT = 1883
+MQTT_ROOT = "msh/US"
+
+# Publish everything the gateway sees
+MQTT_RX_TOPIC = f"{MQTT_ROOT}/rx"
+
+# Accept commands (JSON) to transmit onto the mesh
+MQTT_CMD_TOPIC = f"{MQTT_ROOT}/cmd"
+
+_mqtt_client = None
+
+def mqtt_start():
+    """Start MQTT loop in background thread."""
+    global _mqtt_client
+    if not MQTT_ENABLED:
+        return
+
+    c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+
+    def on_connect(client, userdata, flags, reason_code, properties=None):
+        print(f"[MQTT] connected rc={reason_code}, subscribing {MQTT_CMD_TOPIC}")
+        client.subscribe(MQTT_CMD_TOPIC, qos=0)
+
+    def on_message(client, userdata, msg):
+        # Command format:
+        # {"type":"sendtext","text":"hi","channel":1,"dest":"!e4044dc8"}
+        try:
+            cmd = json.loads(msg.payload.decode("utf-8", errors="replace"))
+        except Exception as e:
+            print("[MQTT] bad json:", e)
+            return
+
+        if cmd.get("type") != "sendtext":
+            return
+
+        text = str(cmd.get("text", ""))
+        if not text:
+            return
+
+        channel = int(cmd.get("channel", 0))
+        dest = cmd.get("dest")  # optional: "!abcd1234" or "^all"
+
+        # We don't have access to the interface here; we deliver via a global callback
+        if callable(globals().get("_mesh_sendtext")):
+            globals()["_mesh_sendtext"](text=text, channel=channel, dest=dest)
+        else:
+            print("[MQTT] _mesh_sendtext not ready yet")
+
+    c.on_connect = on_connect
+    c.on_message = on_message
+    c.connect(MQTT_HOST, MQTT_PORT, keepalive=60)
+
+    t = threading.Thread(target=c.loop_forever, daemon=True)
+    t.start()
+    _mqtt_client = c
+
+def mqtt_publish_packet(packet: dict):
+    """Publish a sanitized packet dict to MQTT."""
+    if not MQTT_ENABLED or _mqtt_client is None:
+        return
+    try:
+        _mqtt_client.publish(MQTT_RX_TOPIC, json.dumps(packet, default=str), qos=0, retain=False)
+    except Exception as e:
+        print("[MQTT] publish error:", e)
+
+
+
+
 #  ===========================================================
 #  PACKET CALLBACK
 # ===========================================================
@@ -258,8 +333,36 @@ def on_packet(packet=None, interface=None):
         safe_packet = sanitize_for_json(packet)
         print("\n=== PACKET RECEIVED ===")
         print(json.dumps(safe_packet, indent=2))
+        
+                # Publish packet to MQTT
+        mqtt_publish_packet(safe_packet)
+
 
         decoded = packet.get("decoded", {}) or {}
+        
+                # ---------- AUTO-REPLY (private channel only) ----------
+        # Your private channel is Index 1 (SierraGolf)
+        chan = (
+            packet.get("channel")
+            or packet.get("channelIndex")
+            or decoded.get("channel")
+            or decoded.get("channelIndex")
+            or 0
+        )
+        try:
+            chan = int(chan)
+        except Exception:
+            chan = 0
+
+        if chan == 1 and decoded.get("portnum") == "TEXT_MESSAGE_APP":
+            txt = decoded.get("text")
+            if txt:
+                sender = packet.get("fromId") or packet.get("from")
+                # Avoid loops: don't reply to our own messages if you like
+                reply = f"📡 HQ Base Copy: {txt}"
+                if interface:
+                    interface.sendText(reply, destinationId=sender, channelIndex=1)
+
 
         # ---------- sniff for config/channels to maybe use later ----------
         if decoded.get("portnum") == "CONFIG_APP":
@@ -613,7 +716,6 @@ def debug_packet():
     return "ok"
 
 
-
 # ===========================================================
 #  MAIN
 # ===========================================================
@@ -623,6 +725,20 @@ if __name__ == "__main__":
 
     print(f"Connecting to Meshtastic on {SERIAL_PORT}...")
     interface = meshtastic.serial_interface.SerialInterface(SERIAL_PORT)
+
+    # ---- MQTT command sender hookup (so mqtt_start() can transmit) ----
+    def _mesh_sendtext(text: str, channel: int = 0, dest=None):
+        # dest can be None, "^all", or "!abcd1234"
+        try:
+            if dest is None:
+                interface.sendText(text, channelIndex=channel)
+            else:
+                interface.sendText(text, destinationId=dest, channelIndex=channel)
+        except Exception as e:
+            print("[MQTT] sendText failed:", e)
+
+    globals()["_mesh_sendtext"] = _mesh_sendtext
+    mqtt_start()
 
     print("Subscribing to packet events...")
     topics = [
